@@ -50,9 +50,9 @@ func main() {
 	//fmt.Printf("左半部分内容: %v\n", GetLeftDisplay("kubeflow"))
 	//
 	//fmt.Printf("中上部分内容：%v\n", GetMidUpDisplay("local-cluster", "kubeflow"))
-	//
-	//fmt.Printf("中下部份内容：%v\n", GetMidDownDisplay("local-cluster", "kubeflow"))
-	//
+
+	fmt.Printf("中下部份内容：%v\n", GetMidDownDisplay2("local-cluster", "kubeflow"))
+
 	//fmt.Printf("右上部分内容：%v\n", GetRightUpDisplay("local-cluster", "kubeflow"))
 
 	//fmt.Println("=============")
@@ -475,6 +475,72 @@ func GetMidUpDisplay(clusterName string, namespace string) map[string]string {
 	return nil
 }
 
+// 根据clusterName，namespace，label从ocm searchAPI获取pod信息
+func getPodsInfoByLable2(clusterName, namespace, label string) []string {
+	filter1 := models.Filter{
+		Property: "cluster",
+		Values:   []string{clusterName},
+	}
+	filter2 := models.Filter{
+		Property: "namespace",
+		Values:   []string{namespace},
+	}
+	filter3 := models.Filter{
+		Property: "kind",
+		Values:   []string{"Pod"},
+	}
+	var input models.Input
+	if len(label) > 0 {
+		filter4 := models.Filter{
+			Property: "label",
+			Values:   []string{label},
+		}
+		input = models.Input{
+			Keywords: []string{},
+			Filters:  []models.Filter{filter1, filter2, filter3, filter4},
+		}
+	}
+	input = models.Input{
+		Keywords: []string{},
+		Filters:  []models.Filter{filter1, filter2, filter3},
+	}
+
+	variables := models.Variables{
+		Input: []models.Input{input},
+	}
+	searchAPIBody := models.SearchAPIBody{
+		OperationName: "searchResultItems",
+		Variables:     variables,
+		Query:         "query searchResultItems($input: [SearchInput]) {\n  searchResult: search(input: $input) {\n    items\n    __typename\n  }\n}",
+	}
+	searchAPIBodySerialize, err := json.Marshal(searchAPIBody)
+	if err != nil {
+		fmt.Printf("json.Marshal failed, err:%v\n", err)
+		return nil
+	}
+	searchResponse := sendHttpPostRequest(searchAPIURL, searchAPIBodySerialize)
+	if searchResponse == nil {
+		fmt.Println("get pods info failed")
+		return nil
+	}
+	searchAPIResult := models.SearchAPIResponse{}
+	err = json.Unmarshal(searchResponse, &searchAPIResult)
+	if err != nil {
+		fmt.Printf("searchAPIResonse json.Unmarshal failed, err:%v\n", err)
+		return nil
+	}
+	if len(searchAPIResult.Data.SearchResult) == 0 {
+		fmt.Println("have no data")
+		return nil
+	}
+	var result []string
+	for i := 0; i < len(searchAPIResult.Data.SearchResult[0].Items); i++ {
+		result = append(result, searchAPIResult.Data.SearchResult[0].Items[i].Name)
+	}
+	return result
+
+}
+
 // GetMidDownDisplay 中间下半部分获取指定集群的某个namespace在该namespace下limit值中的资源使用占比(cpu和mem)
 func GetMidDownDisplay(clusterName string, namespace string) map[string]string {
 	result := map[string]string{}
@@ -534,6 +600,70 @@ func GetMidDownDisplay(clusterName string, namespace string) map[string]string {
 	}
 
 	return result
+}
+
+func GetMidDownDisplay2(clusterName, namespace string) map[string]string {
+	result := map[string]string{}
+
+	podNames := getPodsInfoByLable2(clusterName, namespace, "")
+	var cpuUsageFloat float64
+	var memUsageFloat float64
+	if len(podNames) > 0 {
+		for i := 0; i < len(podNames); i++ {
+			cpuUsageSinglePod := getCPUUsageByPodName(clusterName, namespace, podNames[i])
+			if len(cpuUsageSinglePod) > 0 {
+				cpuUsageFloatSinglePod, err := strconv.ParseFloat(cpuUsageSinglePod[0:len(cpuUsageSinglePod)-1], 64)
+				if err != nil {
+					fmt.Printf("%v string to float failed: %v\n", podNames[i], err)
+				}
+				cpuUsageFloat = cpuUsageFloat + cpuUsageFloatSinglePod
+			}
+			memUsageSinglePod := getMemUsageByPodName(clusterName, namespace, podNames[i])
+			if len(memUsageSinglePod) > 0 {
+				memUsageFloatSinglePod, err := strconv.ParseFloat(memUsageSinglePod[0:len(memUsageSinglePod)-2], 64)
+				if err != nil {
+					fmt.Printf("%v string to float failed: %v\n", podNames[i], err)
+				}
+				memUsageFloat = memUsageFloat + memUsageFloatSinglePod
+			}
+		}
+	}
+	var cpuLimitFloat float64
+	cpuLimit := getCPULimit(clusterName, namespace)
+	if len(cpuLimit) > 0 {
+		cpuLFloat, err := strconv.ParseFloat(cpuLimit[0:len(cpuLimit)-1], 64)
+		if err != nil {
+			fmt.Printf("cpu limit parse failed:%v", err.Error())
+			return nil
+		}
+		cpuLimitFloat = cpuLFloat
+	}
+
+	if cpuLimitFloat > 0 {
+		result["cpu"] = fmt.Sprintf("%.2f", cpuUsageFloat*100/cpuLimitFloat) + "%"
+	} else {
+		result["cpu"] = "0.00%"
+	}
+
+	var memLimitFloat float64
+	memLimit := getMemLimit(clusterName, namespace)
+	if len(memLimit) > 0 {
+		memLFloat, err := strconv.ParseFloat(memLimit[0:len(memLimit)-2], 64)
+		if err != nil {
+			fmt.Printf("mem limit parse failed:%v", err.Error())
+			return nil
+		}
+		memLimitFloat = memLFloat
+	}
+
+	if memLimitFloat > 0 {
+		result["mem"] = fmt.Sprintf("%.2f", memUsageFloat*100000000/memLimitFloat) + "%"
+	} else {
+		result["mem"] = "0.00%"
+	}
+
+	return result
+
 }
 
 // GetRightUpDisplay 右边上半部分获取实时使用数据
